@@ -45,6 +45,8 @@ OPENVPN_AUTH_USER = os.environ.get("OPENVPN_AUTH_USER", "vpn")
 OPENVPN_AUTH_PASS = os.environ.get("OPENVPN_AUTH_PASS", "vpn")
 LOCAL_PROXY_HOST = os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
 LOCAL_PROXY_PORT = int(os.environ.get("LOCAL_PROXY_PORT", "7928"))
+PROXY_AUTH_USER = os.environ.get("PROXY_AUTH_USER", "")
+PROXY_AUTH_PASS = os.environ.get("PROXY_AUTH_PASS", "")
 UI_HOST = os.environ.get("UI_HOST", "0.0.0.0")
 UI_PORT = int(os.environ.get("UI_PORT", "8787"))
 INVALID_BACKOFF_SECONDS = int(os.environ.get("INVALID_BACKOFF_SECONDS", str(30 * 60)))
@@ -3096,10 +3098,13 @@ def check_proxy_health() -> dict[str, Any]:
         }
 
     # 3. 使用 curl 通过本地 SOCKS5 代理接口测试 IP 与实际延迟
+    proxy_url = f"socks5h://127.0.0.1:{LOCAL_PROXY_PORT}"
+    if PROXY_AUTH_USER:
+        proxy_url = f"socks5h://{urllib.parse.quote(PROXY_AUTH_USER, safe='')}:{urllib.parse.quote(PROXY_AUTH_PASS, safe='')}@127.0.0.1:{LOCAL_PROXY_PORT}"
     cmd = [
         "curl", "-4", "-s",
         "-w", "\n%{time_total} %{http_code}",
-        "-x", f"socks5h://127.0.0.1:{LOCAL_PROXY_PORT}",
+        "-x", proxy_url,
         "http://ip.sb",
         "--max-time", "5"
     ]
@@ -3588,7 +3593,7 @@ def main() -> None:
             "blacklisted_nodes": 0,
         },
     )
-    threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT, TUN_DEV), daemon=True).start()
+    threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT, TUN_DEV, PROXY_AUTH_USER, PROXY_AUTH_PASS), daemon=True).start()
     
     # Wait for the gateway to officially start
     print("[网关] 正在启动代理网关...", flush=True)

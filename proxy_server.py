@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import base64
 import select
 import socket
 import threading
@@ -8,6 +9,8 @@ import time
 from typing import Any
 
 _BIND_DEV: bytes = b"tun0"
+_AUTH_USER: str = ""
+_AUTH_PASS: str = ""
 
 def parse_int(value: Any) -> int:
     try:
@@ -157,8 +160,26 @@ def socks5_client(client: socket.socket, first_byte: bytes) -> None:
     upstream = None
     try:
         methods_count = recv_exact(client, 1)[0]
-        recv_exact(client, methods_count)
-        client.sendall(b"\x05\x00")
+        methods = recv_exact(client, methods_count)
+        require_auth = bool(_AUTH_USER)
+        if require_auth:
+            if 0x02 not in methods:
+                client.sendall(b"\x05\xff")
+                return
+            client.sendall(b"\x05\x02")
+            ver = recv_exact(client, 1)
+            if ver != b"\x01":
+                return
+            ulen = recv_exact(client, 1)[0]
+            uname = recv_exact(client, ulen).decode("utf-8", errors="replace") if ulen else ""
+            plen = recv_exact(client, 1)[0]
+            pword = recv_exact(client, plen).decode("utf-8", errors="replace") if plen else ""
+            if uname != _AUTH_USER or pword != _AUTH_PASS:
+                client.sendall(b"\x01\x01")
+                return
+            client.sendall(b"\x01\x00")
+        else:
+            client.sendall(b"\x05\x00")
         version, command, _, address_type = recv_exact(client, 4)
         if version != 5 or command != 1:
             client.sendall(b"\x05\x07\x00\x01\x00\x00\x00\x00\x00\x00")
@@ -204,6 +225,20 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
         head, rest = header.split(b"\r\n\r\n", 1)
         lines = head.decode("iso-8859-1", errors="replace").split("\r\n")
         method, target, version = lines[0].split(" ", 2)
+        if _AUTH_USER:
+            expected = "Basic " + base64.b64encode(f"{_AUTH_USER}:{_AUTH_PASS}".encode("utf-8")).decode("ascii")
+            provided = ""
+            for line in lines[1:]:
+                if line.lower().startswith("proxy-authorization:"):
+                    provided = line.split(":", 1)[1].strip()
+                    break
+            if provided != expected:
+                client.sendall(
+                    b"HTTP/1.1 407 Proxy Authentication Required\r\n"
+                    b'Proxy-Authenticate: Basic realm="aimilivpn"\r\n'
+                    b"Content-Length: 0\r\n\r\n"
+                )
+                return
         if method.upper() == "CONNECT":
             host, _, port_text = target.partition(":")
             port = parse_int(port_text) or 443
@@ -220,7 +255,7 @@ def http_client(client: socket.socket, first_byte: bytes) -> None:
             return
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
         path = urllib.parse.urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
-        headers = [line for line in lines[1:] if not line.lower().startswith(("proxy-connection:", "connection:"))]
+        headers = [line for line in lines[1:] if not line.lower().startswith(("proxy-connection:", "connection:", "proxy-authorization:"))]
         request = f"{method} {path} {version}\r\n" + "\r\n".join(headers) + "\r\nConnection: close\r\n\r\n"
         upstream = create_connection((parsed.hostname, port), timeout=20)
         upstream.sendall(request.encode("iso-8859-1") + rest)
@@ -249,15 +284,18 @@ def proxy_client(client: socket.socket, address: tuple[str, int]) -> None:
         except OSError:
             pass
 
-def start_proxy_server(host: str, port: int, bind_dev: str = "tun0") -> None:
-    global _BIND_DEV
+def start_proxy_server(host: str, port: int, bind_dev: str = "tun0", auth_user: str = "", auth_pass: str = "") -> None:
+    global _BIND_DEV, _AUTH_USER, _AUTH_PASS
     _BIND_DEV = bind_dev.encode("utf-8")
+    _AUTH_USER = auth_user
+    _AUTH_PASS = auth_pass
     try:
         server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind((host, port))
         server.listen(256)
-        print(f"HTTP/SOCKS5 proxy listening on {host}:{port} (bind dev: {bind_dev})", flush=True)
+        auth_note = "auth required" if auth_user else "no auth"
+        print(f"HTTP/SOCKS5 proxy listening on {host}:{port} (bind dev: {bind_dev}, {auth_note})", flush=True)
     except Exception as e:
         print(f"[ERROR] Failed to start HTTP/SOCKS5 proxy on {host}:{port}: {e}", flush=True)
         return
