@@ -56,6 +56,7 @@ INSTANCE_ID = os.environ.get("INSTANCE_ID", "")
 _allowed_raw = os.environ.get("ALLOWED_COUNTRIES", "").strip().upper()
 ALLOWED_COUNTRIES: set[str] = {c.strip() for c in _allowed_raw.split(",") if c.strip()} if _allowed_raw else set()
 EXCLUDE_DATACENTER = os.environ.get("EXCLUDE_DATACENTER", "0") == "1"
+RESIDENTIAL_ONLY = os.environ.get("RESIDENTIAL_ONLY", "0") == "1"
 
 ROOT_DIR = Path(sys.executable).resolve().parent if globals().get("__compiled__") else Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ["VPNGATE_DATA_DIR"]).resolve() if os.environ.get("VPNGATE_DATA_DIR") else ROOT_DIR / "vpngate_data"
@@ -793,6 +794,7 @@ def auto_switch_node(attempt: int = 0) -> None:
             if n.get("probe_status") == "available"
             and not n.get("active")
             and (not EXCLUDE_DATACENTER or n.get("quality") != "datacenter")
+            and (not RESIDENTIAL_ONLY or n.get("ip_type") == "residential")
         ]
         candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
         
